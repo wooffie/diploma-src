@@ -1,0 +1,485 @@
+/*
+ * hr_algo.c
+ *
+ *  Created on: 17 мар. 2023 г.
+ *      Author: wooffie
+ */
+
+#include <heartmonitor.h>
+#include <math.h>
+#include <malloc.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+#ifdef HR_DEBUG
+
+#define HR_SIZE 100
+
+float d1[HR_SIZE];
+float d2[HR_SIZE];
+float d3[HR_SIZE];
+float d4[HR_SIZE];
+float d5[HR_SIZE];
+float d6[HR_SIZE];
+float d7[HR_SIZE];
+float d8[HR_SIZE];
+
+#endif
+
+int findMaxIndex(float *array, int start, int end);
+int findMinIndex(float *array, int start, int end);
+
+HR_HeartMonitor* HR_heartMonitor_new(float freq, int size, float threshold,
+		int bpf_order, float bpf_low, float bpf_high, int ssf_size,
+		int ma_green_size, int ma_redIr_size) {
+
+	SSF *ssf = SSF_new(ssf_size);
+	BPF_filter *bpf = BPF_new(bpf_order, freq, bpf_low, bpf_high);
+	MA_filter *ma_green = MA_new(ma_green_size);
+	MA_filter *ma_red = MA_new(ma_redIr_size);
+	MA_filter *ma_ir = MA_new(ma_redIr_size);
+	HR_HeartMonitor *heartMonitor = (HR_HeartMonitor*) malloc(
+			sizeof(HR_HeartMonitor));
+	heartMonitor->size = size;
+	heartMonitor->freq = freq;
+	heartMonitor->green = (float*) calloc(size, sizeof(float));
+	heartMonitor->red = (float*) calloc(size, sizeof(float));
+	heartMonitor->ir = (float*) calloc(size, sizeof(float));
+	heartMonitor->peaks = (int*) calloc(size, sizeof(int));
+	heartMonitor->ssf_green = ssf;
+	heartMonitor->bpf_green = bpf;
+	heartMonitor->ma_green = ma_green;
+	heartMonitor->ma_red = ma_red;
+	heartMonitor->ma_ir = ma_ir;
+	heartMonitor->threshold = threshold;
+	return heartMonitor;
+}
+void HR_heartMonitor_free(HR_HeartMonitor *heartMonitor) {
+	SSF_free(heartMonitor->ssf_green);
+	BPF_free(heartMonitor->bpf_green);
+	MA_free(heartMonitor->ma_green);
+	MA_free(heartMonitor->ma_red);
+	MA_free(heartMonitor->ma_ir);
+	free(heartMonitor->green);
+	free(heartMonitor->red);
+	free(heartMonitor->ir);
+	free(heartMonitor);
+}
+
+void HR_heartMonitor_addGreen(HR_HeartMonitor *heartMonitor, float *array,
+		int array_size) {
+	if (array_size >= heartMonitor->size) {
+		memcpy(heartMonitor->green, &array[array_size - heartMonitor->size],
+				heartMonitor->size * sizeof(float));
+	} else {
+		memmove(heartMonitor->green, &heartMonitor->green[array_size],
+				(heartMonitor->size - array_size) * sizeof(float));
+		memmove(&heartMonitor->green[heartMonitor->size - array_size], array,
+				array_size * sizeof(float));
+	}
+
+}
+
+void HR_heartMonitor_addRedIr(HR_HeartMonitor *heartMonitor, float *array_red,
+		float *array_ir, int array_size) {
+	if (array_size >= heartMonitor->size) {
+		memcpy(heartMonitor->red, &array_red[array_size - heartMonitor->size],
+				heartMonitor->size * sizeof(float));
+		memcpy(heartMonitor->ir, &array_ir[array_size - heartMonitor->size],
+				heartMonitor->size * sizeof(float));
+	} else {
+		memmove(heartMonitor->red, &heartMonitor->red[array_size],
+				(heartMonitor->size - array_size) * sizeof(float));
+		memcpy(&heartMonitor->red[heartMonitor->size - array_size], array_red,
+				array_size * sizeof(float));
+
+		memmove(heartMonitor->ir, &heartMonitor->ir[array_size],
+				(heartMonitor->size - array_size) * sizeof(float));
+		memcpy(&heartMonitor->ir[heartMonitor->size - array_size], array_ir,
+				array_size * sizeof(float));
+	}
+}
+
+void HR_heartMonitor_peaksFromGreen(HR_HeartMonitor *heartMonitor) {
+	float *tmp_arr = (float*) malloc(heartMonitor->size * sizeof(float));
+
+// Copy original array
+	memcpy(tmp_arr, heartMonitor->green, heartMonitor->size * sizeof(float));
+#ifdef HR_DEBUG
+	memcpy(d1, tmp_arr, HR_SIZE * sizeof(float));
+#endif
+
+// Moving Average filter
+	MA_process(heartMonitor->ma_green, tmp_arr, heartMonitor->size);
+#ifdef HR_DEBUG
+	memcpy(d2, tmp_arr, HR_SIZE * sizeof(float));
+#endif
+
+// Band-pass filter
+	BPF_process(heartMonitor->bpf_green, tmp_arr, heartMonitor->size);
+#ifdef HR_DEBUG
+	memcpy(d3, tmp_arr, HR_SIZE * sizeof(float));
+#endif
+
+// Invert if needed
+//	for (int i = 0; i < heartMonitor->size; i++) {
+//		tmp_arr[i] = -tmp_arr[i];
+//	}
+
+// SSF calculation
+	SSF_process(heartMonitor->ssf_green, tmp_arr, heartMonitor->size);
+#ifdef HR_DEBUG
+	memcpy(d4, tmp_arr, HR_SIZE * sizeof(float));
+#endif
+
+// Detect peaks of SSF
+	peaks_detect(tmp_arr, heartMonitor->peaks, heartMonitor->size,
+			heartMonitor->threshold);
+	peaks_normalize(tmp_arr, heartMonitor->peaks, heartMonitor->size);
+
+#ifdef HR_DEBUG
+	for (int i = 0; i < HR_SIZE; i++) {
+		d5[i] = heartMonitor->green[i] * heartMonitor->peaks[i];
+	}
+#endif
+
+	free(tmp_arr);
+}
+
+float HR_heartMonitor_heartRateFromPeaks(HR_HeartMonitor *heartMonitor) {
+	int indexed_size = 0;
+	int *signals_indexed = peaks_indexingSize(heartMonitor->peaks,
+			heartMonitor->size, &indexed_size);
+
+	float result = HR_heartMonitor_heartRateFromIndexedPeaks(heartMonitor,
+			signals_indexed, indexed_size);
+
+	free(signals_indexed);
+	return result;
+}
+
+float HR_heartMonitor_heartRateFromIndexedPeaks(HR_HeartMonitor *heartMonitor,
+		int *peaks, int peaks_size) {
+	int pointer = 0;
+	int count = 0;
+	int sum = 0.0;
+	while (pointer < peaks_size - 1) {
+		sum += (peaks[pointer + 1] - peaks[pointer]);
+		count++;
+		pointer++;
+	}
+
+	if (count == 0) {
+		return nanf("");
+	} else {
+		return 60.0 / ((sum / count) / heartMonitor->freq);
+	}
+}
+
+float HR_heartMonitor_ratioFromIndexedPeaks(HR_HeartMonitor *heartMonitor,
+		int *peaks, int peaks_size) {
+	if (peaks_size < 2) {
+		return nanf("");
+	}
+	int *mins = (int*) malloc((peaks_size - 1) * sizeof(int));
+	int *maxs = (int*) malloc((peaks_size - 2) * sizeof(int));
+	// RED
+	// find mins
+
+	for (int i = 0; i < peaks_size - 1; i++) {
+		mins[i] = findMinIndex(heartMonitor->red, peaks[i], peaks[i + 1]);
+	}
+
+	// find maxs between mins
+
+	for (int i = 0; i < peaks_size - 2; i++) {
+		maxs[i] = findMaxIndex(heartMonitor->red, mins[i], mins[i + 1]);
+
+	}
+	// calculate ratio
+	float AC_red = 0.0;
+	float DC_red = 0.0;
+	int count = 0;
+	for (int i = 0; i < peaks_size - 2; i++) {
+		count++;
+		float DC_now = (heartMonitor->red[mins[i]]
+				+ heartMonitor->red[mins[i + 1]]) / 2;
+		AC_red += (heartMonitor->red[maxs[i]] - DC_now);
+		DC_red += DC_now;
+	}
+
+	AC_red = AC_red / count;
+	DC_red = DC_red / count;
+
+	// IR
+	for (int i = 0; i < peaks_size - 1; i++) {
+		mins[i] = findMinIndex(heartMonitor->ir, peaks[i], peaks[i + 1]);
+	}
+	// find maxs between mins
+	for (int i = 0; i < peaks_size - 2; i++) {
+		maxs[i] = findMaxIndex(heartMonitor->ir, mins[i], mins[i + 1]);
+	}
+	// calculate ratio
+	float AC_ir = 0.0;
+	float DC_ir = 0.0;
+	count = 0;
+	for (int i = 0; i < peaks_size - 2; i++) {
+		count++;
+		float DC_now = (heartMonitor->ir[mins[i]]
+				+ heartMonitor->ir[mins[i + 1]]) / 2;
+		AC_ir += heartMonitor->ir[maxs[i]] - DC_now;
+		DC_ir += DC_now;
+	}
+	AC_ir = AC_ir / count;
+	DC_ir = DC_ir / count;
+
+	free(maxs);
+	free(mins);
+	return (AC_red / DC_red) / (AC_ir / DC_ir);
+}
+
+float HR_heartMonitor_ratioFromPeaks(HR_HeartMonitor *heartMonitor) {
+
+	int peaks_size = 0;
+	int *peaks = peaks_indexingSize(heartMonitor->peaks, heartMonitor->size,
+			&peaks_size);
+	float result = HR_heartMonitor_ratioFromIndexedPeaks(heartMonitor, peaks,
+			peaks_size);
+	free(peaks);
+	return result;
+}
+
+void HR_heartMonitor_heartRateAndRation(HR_HeartMonitor *heartMonitor,
+		float *rate, float *ratio) {
+
+}
+
+void peaks_normalize(float *array, int *signals, int array_size) {
+	int start = 0;
+	for (int i = 1; i < array_size; i++) {
+		if (signals[i] == 1 && signals[i - 1] == 0) {
+			start = i;
+		}
+		if ((signals[i] == 0 && signals[i - 1] == 1) || i == array_size - 1) {
+
+			float max = array[start];
+			for (int j = start + 1; j < i; j++) {
+				if (max < array[j]) {
+					max = array[j];
+				}
+			}
+
+			int peaks = 0;
+			int count = 0;
+			for (int j = start; j < i; j++) {
+				signals[j] = 0;
+				if (array[j] >= max) {
+					peaks += j;
+					count++;
+				}
+			}
+			if (count != 0) {
+				signals[peaks / count] = 1;
+			}
+		}
+	}
+}
+
+void peaks_detect(float *array, int *signals, int array_size,
+		float initial_threshold) {
+	float threshold = array[0];
+	for (int i = 1; i < array_size; i++) {
+		if (array[i] > threshold) {
+			threshold = array[i];
+		}
+	}
+	threshold = initial_threshold * threshold;
+
+	for (int i = 0; i < array_size; i++) {
+		if (array[i] > threshold) {
+			signals[i] = 1;
+		} else {
+			signals[i] = 0;
+		}
+	}
+}
+
+void peaks_indexing(int *signals, int *ret_signals, int array_size) {
+	int pointer = 0;
+	for (int i = 0; i < array_size; i++) {
+		if (signals[i] == 1) {
+			ret_signals[pointer] = i;
+			pointer++;
+		}
+	}
+	ret_signals[pointer] = -1;
+}
+
+int* peaks_indexingSize(int *signals, int array_size, int *result_size) {
+	int count = 0;
+	for (int i = 0; i < array_size; i++) {
+		if (signals[i] == 1) {
+			count++;
+		}
+	}
+	*result_size = count;
+	int *result = (int*) malloc(count * sizeof(int));
+	int pointer = 0;
+	for (int i = 0; i < array_size; i++) {
+		if (signals[i] == 1) {
+			result[pointer] = i;
+			pointer++;
+		}
+	}
+
+	return result;
+
+}
+
+SSF* SSF_new(int window_size) {
+	SSF *ssf = (SSF*) malloc(sizeof(SSF));
+	ssf->window_size = window_size;
+	ssf->data = (float*) malloc(window_size * sizeof(float));
+	return ssf;
+}
+
+void SSF_free(SSF *ssf) {
+	free(ssf->data);
+	free(ssf);
+}
+
+void SSF_process(SSF *ssf, float *array, int array_size) {
+	for (int i = 0; i < array_size; i++) {
+		for (int j = 1; j < ssf->window_size; j++) {
+			ssf->data[j] = ssf->data[j - 1];
+		}
+		ssf->data[0] = array[i];
+		float sum = 0.0;
+		for (int j = 0; j < ssf->window_size - 1; j++) {
+			float delta = ssf->data[j] - ssf->data[j + 1];
+			if (delta >= 0) {
+				sum += delta;
+			}
+		}
+		array[i] = sum;
+	}
+}
+
+MA_filter* MA_new(int window_size) {
+	MA_filter *filter = malloc(sizeof(MA_filter));
+	filter->window_size = window_size;
+	filter->data = calloc(window_size - 1, sizeof(float));
+	return filter;
+
+}
+
+void MA_free(MA_filter *filter) {
+	free(filter->data);
+	free(filter);
+}
+
+void MA_process(MA_filter *filter, float *array, int array_size) {
+	for (int i = 0; i < array_size; i++) {
+		for (int j = filter->window_size - 1; j > 0; j--) {
+			filter->data[j] = filter->data[j - 1];
+		}
+		filter->data[0] = array[i];
+		float sum = 0.0;
+		for (int j = 0; j < filter->window_size; j++) {
+			sum += filter->data[j];
+		}
+		array[i] = sum / filter->window_size;
+	}
+}
+
+BPF_filter* BPF_new(int order, float freq, float low, float high) {
+	BPF_filter *bpf_filter = (BPF_filter*) malloc(sizeof(BPF_filter));
+
+	bpf_filter->n = order;
+	bpf_filter->freq = freq;
+	bpf_filter->freq_low = low;
+	bpf_filter->freq_high = high;
+
+	float a, b, r;
+	a = cosf(M_PI * (high + low) / freq) / cosf(M_PI * (high - low) / freq);
+	b = tanf(M_PI * (high - low) / freq);
+
+	bpf_filter->n = bpf_filter->n / 2;
+	bpf_filter->A = (float*) malloc(bpf_filter->n * sizeof(float));
+	bpf_filter->d1 = (float*) malloc(bpf_filter->n * sizeof(float));
+	bpf_filter->d2 = (float*) malloc(bpf_filter->n * sizeof(float));
+	bpf_filter->d3 = (float*) malloc(bpf_filter->n * sizeof(float));
+	bpf_filter->d4 = (float*) malloc(bpf_filter->n * sizeof(float));
+
+	bpf_filter->w0 = (float*) calloc(bpf_filter->n, sizeof(float));
+	bpf_filter->w1 = (float*) calloc(bpf_filter->n, sizeof(float));
+	bpf_filter->w2 = (float*) calloc(bpf_filter->n, sizeof(float));
+	bpf_filter->w3 = (float*) calloc(bpf_filter->n, sizeof(float));
+	bpf_filter->w4 = (float*) calloc(bpf_filter->n, sizeof(float));
+
+	for (int i = 0; i < bpf_filter->n; ++i) {
+		r = sinf(M_PI * (2.0 * i + 1.0) / (4.0 * bpf_filter->n));
+		freq = b * b + 2.0 * b * r + 1.0;
+		bpf_filter->A[i] = b * b / freq;
+		bpf_filter->d1[i] = 4.0 * a * (1.0 + b * r) / freq;
+		bpf_filter->d2[i] = 2.0 * (b * b - 2.0 * a * a - 1.0) / freq;
+		bpf_filter->d3[i] = 4.0 * a * (1.0 - b * r) / freq;
+		bpf_filter->d4[i] = -(b * b - 2.0 * b * r + 1.0) / freq;
+	}
+
+	return bpf_filter;
+}
+
+void BPF_free(BPF_filter *bpf_filter) {
+	free(bpf_filter->A);
+	free(bpf_filter->d1);
+	free(bpf_filter->d2);
+	free(bpf_filter->d3);
+	free(bpf_filter->d4);
+	free(bpf_filter->w0);
+	free(bpf_filter->w1);
+	free(bpf_filter->w2);
+	free(bpf_filter->w3);
+	free(bpf_filter->w4);
+	free(bpf_filter);
+
+}
+
+void BPF_process(BPF_filter *filter, float *array, int array_size) {
+	for (int i = 0; i < array_size; i++) {
+		for (int j = 0; j < filter->n; ++j) {
+			filter->w0[j] = filter->d1[j] * filter->w1[j]
+					+ filter->d2[j] * filter->w2[j]
+					+ filter->d3[j] * filter->w3[j]
+					+ filter->d4[j] * filter->w4[j] + array[i];
+			array[i] = filter->A[j]
+					* (filter->w0[j] - 2.0 * filter->w2[j] + filter->w4[j]);
+			filter->w4[j] = filter->w3[j];
+			filter->w3[j] = filter->w2[j];
+			filter->w2[j] = filter->w1[j];
+			filter->w1[j] = filter->w0[j];
+		}
+	}
+}
+
+int findMaxIndex(float *array, int start, int end) {
+	int index = start;
+	for (int i = start; i < end; i++) {
+		if (array[i] > array[index]) {
+			index = i;
+		}
+	}
+	return index;
+}
+
+int findMinIndex(float *array, int start, int end) {
+	int index = start;
+	for (int i = start; i < end; i++) {
+		if (array[i] < array[index]) {
+			index = i;
+		}
+	}
+	return index;
+}
+

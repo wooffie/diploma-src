@@ -1,0 +1,22 @@
+/*
+ * hr_algo.h
+ *
+ *  Created on: 17 мар. 2023 г.
+ *      Author: wooffie
+ */
+
+#ifndef INC_HR_ALGO_H_
+#define INC_HR_ALGO_H_
+
+
+int bpf_init(int order, float freq, float low, float up);
+void bpf_deinit();
+
+
+float bpf_next(float value);
+
+void zscore(float array[], int array_size, int signals[], int lag,
+		float threshold);
+
+
+#endif /* INC_HR_ALGO_H_ */

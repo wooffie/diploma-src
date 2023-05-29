@@ -1,0 +1,15 @@
+/*
+ * MovAvg.h
+ *
+ *  Created on: Mar 7, 2023
+ *      Author: wooffie
+ */
+
+#ifndef INC_MOVAVG_H_
+#define INC_MOVAVG_H_
+
+#include "stdint.h"
+
+void mov_avg(int16_t size, int16_t step, float * array, float * result);
+
+#endif /* INC_MOVAVG_H_ */

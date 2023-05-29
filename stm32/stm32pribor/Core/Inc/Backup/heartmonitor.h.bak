@@ -1,0 +1,97 @@
+/*
+ * hr_algo.h
+ *
+ *  Created on: 17 мар. 2023 г.
+ *      Author: wooffie
+ */
+
+#ifndef INC_HEARTMONITOR_H_
+#define INC_HEARTMONITOR_H_
+
+// #define HR_DEBUG
+
+
+#ifdef HR_DEBUG
+
+#define HR_SIZE 100
+
+extern float d1[HR_SIZE];
+extern float d2[HR_SIZE];
+extern float d3[HR_SIZE];
+extern float d4[HR_SIZE];
+extern float d5[HR_SIZE];
+extern float d6[HR_SIZE];
+extern float d7[HR_SIZE];
+extern float d8[HR_SIZE];
+
+#endif
+
+typedef struct {
+	int n;
+	float freq;
+	float freq_low;
+	float freq_high;
+	float *A, *d1, *d2, *d3, *d4, *w0, *w1, *w2, *w3, *w4;
+
+} BPF_filter;
+
+void BPF_process(BPF_filter *filter, float *array, int array_size);
+void BPF_free(BPF_filter *bpf_filter);
+BPF_filter* BPF_new(int order, float freq, float low, float high);
+
+typedef struct {
+	int window_size;
+	float *data; // prev data
+} MA_filter;
+
+MA_filter* MA_new(int window_size);
+void MA_process(MA_filter *filter, float *array, int array_size);
+void MA_free(MA_filter *filter);
+
+typedef struct {
+	int window_size;
+	float *data;
+} SSF;
+
+SSF* SSF_new(int window_size);
+void SSF_free(SSF *ssf);
+void SSF_process(SSF *ssf, float *array, int array_size);
+
+typedef struct {
+	int size;
+	float freq;
+	float *green;
+	float *red;
+	float *ir;
+	int *peaks;
+	float threshold;
+	SSF *ssf_green;
+	BPF_filter *bpf_green;
+	MA_filter *ma_green;
+	MA_filter *ma_red;
+	MA_filter *ma_ir;
+} HR_HeartMonitor; // Hearth Monitor
+
+HR_HeartMonitor* HR_heartMonitor_new(float freq, int size, float threshold,
+		int bpf_order, float bpf_low, float bpf_high, int ssf_size,
+		int ma_green_size, int ma_redIr_size);
+void HR_heartMonitor_free(HR_HeartMonitor *heartMonitor);
+
+void HR_heartMonitor_addGreen(HR_HeartMonitor *heartMonitor, float *array,
+		int array_size);
+void HR_heartMonitor_addRedIr(HR_HeartMonitor *heartMonitor, float *array_red,
+		float *array_ir, int array_size);
+
+void HR_heartMonitor_peaksFromGreen(HR_HeartMonitor *heartMonitor);
+float HR_heartMonitor_heartRateFromPeaks(HR_HeartMonitor *heartMonitor);
+float HR_heartMonitor_ratioFromPeaks(HR_HeartMonitor *heartMonitor);
+float HR_heartMonitor_ratioFromIndexedPeaks(HR_HeartMonitor *heartMonitor, int* peaks, int peaks_size);
+float HR_heartMonitor_heartRateFromIndexedPeaks(HR_HeartMonitor *heartMonitor, int* peaks, int peaks_size);
+
+void peaks_detect(float *array, int *signals, int array_size,
+		float initial_threshold);
+void peaks_normalize(float *array, int *signals, int array_size);
+void peaks_indexing(int *signals,int *ret_signals, int array_size);
+int* peaks_indexingSize(int* signals, int array_size, int *result_size);
+
+#endif /* INC_HEARTMONITOR_H_ */

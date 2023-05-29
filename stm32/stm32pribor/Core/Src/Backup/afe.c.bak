@@ -1,0 +1,225 @@
+/*
+ * AFE.c
+ *
+ *  Created on: Nov 17, 2022
+ *      Author: wooffie
+ */
+
+#include <afe.h>
+#include "spi.h"
+
+// SEN == SPI enable - active level - low
+#define AFE_SPI_DIS() HAL_GPIO_WritePin(AFE_SPI_EN_GPIO_Port, AFE_SPI_EN_Pin, GPIO_PIN_SET)
+#define AFE_SPI_EN() HAL_GPIO_WritePin(AFE_SPI_EN_GPIO_Port, AFE_SPI_EN_Pin, GPIO_PIN_RESET)
+
+SPI_HandleTypeDef afe_spi;
+
+float AFE_FLOAT[FIFO_DEPTH];
+uint8_t AFE_ILED_1, AFE_ILED_2, AFE_ILED_3, AFE_ILED_4;
+//double
+
+void AFE_READ_ENABLE() {
+	AFE_WRITE(0x00, 0x000041);
+}
+
+void AFE_READ_DISABLE() {
+	AFE_WRITE(0x00, 0x000040);
+}
+
+void AFE_WRITE(uint8_t reg_address, unsigned long data) {
+	uint8_t pData[] = { reg_address, data >> 16, data >> 8, data };
+	AFE_SPI_EN();
+
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	HAL_SPI_Transmit_DMA(&hspi1, (uint8_t*) pData, 4);
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		// wait before off ENABLE
+		;
+
+	AFE_SPI_DIS();
+}
+
+unsigned long AFE_READ(uint8_t reg_address) {
+	uint8_t add[] = { reg_address };
+	uint8_t data[3];
+
+	AFE_SPI_EN();
+
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	HAL_SPI_Transmit_DMA(&hspi1, (uint8_t*) add, 1);
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	HAL_SPI_Receive_DMA(&afe_spi, (uint8_t*) data, 3);
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+
+	AFE_SPI_DIS();
+	unsigned long result = (data[0] << 16) | (data[1] << 8) | data[2];
+	return result;
+}
+
+void AFE_INIT(SPI_HandleTypeDef hspi) {
+	afe_spi = hspi;
+	HAL_GPIO_WritePin(AFE_SPI_EN_GPIO_Port, AFE_SPI_EN_Pin, GPIO_PIN_SET);
+
+	// RESET INIT
+	HAL_Delay(1);
+	HAL_GPIO_WritePin(AFE_RESETZ_GPIO_Port, AFE_RESETZ_Pin, GPIO_PIN_RESET);
+	HAL_Delay(1);
+	HAL_GPIO_WritePin(AFE_RESETZ_GPIO_Port, AFE_RESETZ_Pin, GPIO_PIN_SET);
+	HAL_Delay(1);
+	HAL_GPIO_WritePin(AFE_RESETZ_GPIO_Port, AFE_RESETZ_Pin, GPIO_PIN_RESET);
+	HAL_Delay(1);
+	HAL_GPIO_WritePin(AFE_RESETZ_GPIO_Port, AFE_RESETZ_Pin, GPIO_PIN_SET);
+	HAL_Delay(1);
+
+	AFE_REG_INIT();
+}
+
+void AFE_REG_INIT() {
+	// FIFO_EN = 1
+	AFE_WRITE(0x00, 0x000040);
+	// WM_FIFO = 99 (100 for RDY), ADC_RDY -> FIFO_RDY
+	AFE_WRITE(0x42, (99 << 6) | (0x02 << 4));
+	// FIFO_EN = 0, TM_COUNT_RST = 1
+	AFE_WRITE(0x00, 0x000002);
+	// PRPCT = 10, for init
+	AFE_WRITE(0x1D, 0x00000A);
+	// TM_COUT_RST = 0;
+	AFE_WRITE(0x00, 0x000000);
+	// 1 ms delay
+	HAL_Delay(1);
+	// TM_COUNT_RST = 1
+	AFE_WRITE(0x00, 0x000002);
+
+	// // CLK = 25 Hz , 5120 ticks on 128 kHz
+	AFE_WRITE(0x1D, 0x1400);
+	// Filter 2.5 kHz
+	AFE_WRITE(0x78, 0b0101);
+
+	// 12 phases A B C D E F
+	AFE_WRITE(0x88, 0x00000B);
+
+	// T WINDOW MIN = 12 ticks / 84 us
+	AFE_WRITE(0x8C, 0xB);
+
+
+	int r = 0x4;
+	int c = 0x2;
+
+	// PHASE 1
+	// RED ON
+	AFE_WRITE(0xB8, 0x010004);
+	AFE_WRITE(0xB9, (c << 10) | (r << 4) | 0x4);
+	AFE_WRITE(0xBA, 0xC);
+
+	// 2 - masked
+	AFE_WRITE(0xBB, 0x010000);
+	AFE_WRITE(0xBC, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xBD, (0x1 << 17) | 0xC);
+
+	// 3 - masked
+	AFE_WRITE(0xBE, 0x010000);
+	AFE_WRITE(0xBF, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xC0, (0x1 << 17) | 0xC);
+
+	// 4 - masked
+	AFE_WRITE(0xC1, 0x010000);
+	AFE_WRITE(0xC2, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xC3, (0x1 << 17) | 0xC);
+
+	// 5
+	// IR ON
+	AFE_WRITE(0xC4, 0x010008);
+	AFE_WRITE(0xC5, (c << 10) | (r << 4) | 0x4);
+	AFE_WRITE(0xC6, 0xC);
+
+	// 6 - masked
+	AFE_WRITE(0xC7, 0x010000);
+	AFE_WRITE(0xC8, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xC9, (0x1 << 17) | 0xC);
+
+	// 7 - masked
+	AFE_WRITE(0xCA, 0x010000);
+	AFE_WRITE(0xCB, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xCC, (0x1 << 17) | 0xC);
+
+	// 8 - masked
+	AFE_WRITE(0xCD, 0x010000);
+	AFE_WRITE(0xCE, (0x1 << 10) | (0x2 << 4) | 0x4);
+	AFE_WRITE(0xCF, (0x1 << 17) | 0xC);
+
+	// 9
+	// Green ON
+	AFE_WRITE(0xD0, 0x020002);
+	AFE_WRITE(0xD1, (0x1 << 10) | (0x2 << 4) | 0x1);
+	AFE_WRITE(0xD2, 0xC);
+
+	// 10 - not masked for aligment
+	AFE_WRITE(0xD3, 0x020002);
+	AFE_WRITE(0xD4, (0x1 << 10) | (0x2 << 4) | 0x1);
+	AFE_WRITE(0xD5, 0xC);
+
+	// 11 - masked
+	AFE_WRITE(0xD6, 0x020000);
+	AFE_WRITE(0xD7, (0x1 << 10) | (0x2 << 4) | 0x1);
+	AFE_WRITE(0xD8, (0x1 << 17) | 0xC);
+
+	// 12 - masked
+	AFE_WRITE(0xD9, 0x020000);
+	AFE_WRITE(0xDA, (0x1 << 10) | (0x2 << 4) | 0x1);
+	AFE_WRITE(0xDB, (0x1 << 17) | 0xC);
+
+	// FIFO_EN = 1
+	AFE_WRITE(0x00, 0x000040);
+
+}
+
+void AFE_LED_STRENGTH(uint8_t iled1, uint8_t iled2, uint8_t iled3,
+		uint8_t iled4) {
+	AFE_ILED_1 = iled1;
+	AFE_ILED_2 = iled2;
+	AFE_ILED_3 = iled3;
+	AFE_ILED_4 = iled4;
+	AFE_ILED_UPDATE();
+}
+
+void AFE_ILED_UPDATE() {
+	// ILED1 ILED2 strength
+	AFE_WRITE(0xAC, (AFE_ILED_2 << 12) | AFE_ILED_1);
+	// ILED3 ILED4 strength
+	AFE_WRITE(0xAE, (AFE_ILED_4 << 12) | AFE_ILED_3);
+}
+
+// PAGE 38 datasheet
+void AFE_FIFO_READ(uint16_t size) {
+	uint8_t fifo_addr[] = { 0xFF };
+	uint8_t AFE_Buffer[FIFO_DEPTH * 3];
+	AFE_SPI_EN();
+
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	HAL_SPI_Transmit_DMA(&hspi1, (uint8_t*) fifo_addr, 1);
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	HAL_SPI_Receive_DMA(&hspi1, (uint8_t*) AFE_Buffer, size * 3);
+	while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY)
+		;
+	AFE_SPI_DIS();
+
+	for (uint16_t i = 0; i < size; i++) {
+
+		int32_t adc = AFE_Buffer[3 * i];
+		adc = (adc << 8) | AFE_Buffer[3 * i + 1];
+		adc = (adc << 8) | AFE_Buffer[3 * i + 2];
+		if (adc & 0x00800000) {
+			adc = adc ^ 0xFF000000;
+		}
+		float result = (float) adc / 2097152.0f;
+		AFE_FLOAT[i] = result;
+	}
+	return;
+}
+

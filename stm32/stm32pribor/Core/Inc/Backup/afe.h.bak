@@ -1,0 +1,39 @@
+/*
+ * AFE.h
+ *
+ *  Created on: Nov 17, 2022
+ *      Author: wooffie
+ */
+
+#ifndef INC_AFE_H_
+#define INC_AFE_H_
+
+#include "stm32f1xx_hal.h"
+
+// REGISTERS
+
+#define FIFO_DEPTH 128
+
+extern float AFE_FLOAT[FIFO_DEPTH];
+
+extern uint8_t AFE_ILED_1, AFE_ILED_2, AFE_ILED_3, AFE_ILED_4;
+
+void AFE_INIT(SPI_HandleTypeDef hspi);
+
+void AFE_REG_INIT();
+
+void AFE_ILED_UPDATE();
+void AFE_LED_STRENGTH(uint8_t iled1, uint8_t iled2, uint8_t iled3,
+		uint8_t iled4);
+
+void AFE_READ_ENABLE();
+
+void AFE_READ_DISABLE();
+
+void AFE_FIFO_READ(uint16_t size);
+
+void AFE_WRITE(uint8_t reg_address, unsigned long data);
+
+unsigned long AFE_READ(uint8_t reg_address);
+
+#endif /* INC_AFE_H_ */
